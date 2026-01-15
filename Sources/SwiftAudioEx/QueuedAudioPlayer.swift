@@ -16,6 +16,8 @@ public class QueuedAudioPlayer: AudioPlayer, QueueManagerDelegate {
     fileprivate var lastIndex: Int = -1
     fileprivate var lastItem: AudioItem? = nil
 
+    public var allowAutomaticQueueAdvance: Bool = true
+
     public override init(nowPlayingInfoController: NowPlayingInfoControllerProtocol = NowPlayingInfoController(), remoteCommandController: RemoteCommandController = RemoteCommandController()) {
         super.init(nowPlayingInfoController: nowPlayingInfoController, remoteCommandController: remoteCommandController)
         queue.delegate = self
@@ -188,6 +190,12 @@ public class QueuedAudioPlayer: AudioPlayer, QueueManagerDelegate {
 
     override func AVWrapperItemDidPlayToEndTime() {
         event.playbackEnd.emit(data: .playedUntilEnd)
+
+        guard allowAutomaticQueueAdvance else {
+            // Crossfade controller owns the transition
+            return
+        }
+
         if (repeatMode == .track) {
             self.pause()
 

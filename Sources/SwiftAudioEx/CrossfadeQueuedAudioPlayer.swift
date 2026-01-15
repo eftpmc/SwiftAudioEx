@@ -17,9 +17,10 @@ public final class CrossfadeQueuedAudioPlayer {
 
     // MARK: - Crossfade State
 
-    private let crossfadeDuration: TimeInterval = 3.0
-    private var hasPreparedNextTrack: Bool = false
+    private let crossfadeDuration: TimeInterval = 10.0
+    private var hasPreparedNextTrack = false
     private var crossfadeTimer: Timer?
+    private var waitingForInactiveToStart = false
 
     // MARK: - Init
 
@@ -37,6 +38,10 @@ public final class CrossfadeQueuedAudioPlayer {
             remoteCommandController: RemoteCommandController()
         )
 
+        // Crossfade controller owns transitions
+        primary.allowAutomaticQueueAdvance = false
+        secondary.allowAutomaticQueueAdvance = false
+
         self.active = primary
         self.inactive = secondary
 
@@ -45,7 +50,24 @@ public final class CrossfadeQueuedAudioPlayer {
 
     // MARK: - Event Bridging (active only)
 
+    private func unbindEvents(from player: QueuedAudioPlayer) {
+        player.event.stateChange.removeListener(self)
+        player.event.playWhenReadyChange.removeListener(self)
+        player.event.playbackEnd.removeListener(self)
+        player.event.secondElapse.removeListener(self)
+        player.event.fail.removeListener(self)
+        player.event.seek.removeListener(self)
+        player.event.updateDuration.removeListener(self)
+        player.event.receiveCommonMetadata.removeListener(self)
+        player.event.receiveTimedMetadata.removeListener(self)
+        player.event.receiveChapterMetadata.removeListener(self)
+        player.event.didRecreateAVPlayer.removeListener(self)
+        player.event.currentItem.removeListener(self)
+    }
+
     private func bindEvents(from player: QueuedAudioPlayer) {
+        unbindEvents(from: player)
+
         player.event.stateChange.addListener(self) { [weak self] state in
             self?.event.stateChange.emit(data: state)
         }
@@ -98,7 +120,7 @@ public final class CrossfadeQueuedAudioPlayer {
         }
     }
 
-    // MARK: - Step 3: End-of-track detection
+    // MARK: - Step 1: End-of-track detection
 
     private func checkForUpcomingCrossfade() {
         guard !hasPreparedNextTrack else { return }
@@ -117,23 +139,31 @@ public final class CrossfadeQueuedAudioPlayer {
         prepareNextTrackForCrossfade(nextItem)
     }
 
-    // MARK: - Step 4: Prime inactive player
+    // MARK: - Step 2: Prime inactive player
 
     private func prepareNextTrackForCrossfade(_ item: AudioItem) {
         inactive.clear()
-        inactive.load(item: item, playWhenReady: false)
         inactive.volume = 0.0
-        inactive.pause()
+        inactive.load(item: item, playWhenReady: false)
 
-        startCrossfade()
+        waitingForInactiveToStart = true
+
+        inactive.event.stateChange.addListener(self) { [weak self] state in
+            guard let self, self.waitingForInactiveToStart else { return }
+
+            if state == .playing {
+                self.waitingForInactiveToStart = false
+                self.startCrossfade()
+            }
+        }
+
+        inactive.play()
     }
 
-    // MARK: - Step 5: Crossfade
+    // MARK: - Step 3: Crossfade
 
     private func startCrossfade() {
         crossfadeTimer?.invalidate()
-
-        inactive.play()
 
         let steps = 30
         let interval = crossfadeDuration / Double(steps)
@@ -158,11 +188,16 @@ public final class CrossfadeQueuedAudioPlayer {
         }
     }
 
+    // MARK: - Step 4: Finalize transition
+
     private func finishCrossfade() {
         active.stop()
         active.clear()
 
         swap(&active, &inactive)
+
+        // Advance queue manually (RNTP-safe)
+        _ = active.queue.next(wrap: active.repeatMode == .queue)
 
         active.volume = 1.0
         inactive.volume = 0.0
@@ -192,21 +227,10 @@ public final class CrossfadeQueuedAudioPlayer {
         active.playbackError
     }
 
-    public var currentTime: Double {
-        active.currentTime
-    }
-
-    public var duration: Double {
-        active.duration
-    }
-
-    public var bufferedPosition: Double {
-        active.bufferedPosition
-    }
-
-    public var playerState: AudioPlayerState {
-        active.playerState
-    }
+    public var currentTime: Double { active.currentTime }
+    public var duration: Double { active.duration }
+    public var bufferedPosition: Double { active.bufferedPosition }
+    public var playerState: AudioPlayerState { active.playerState }
 
     public var playWhenReady: Bool {
         get { active.playWhenReady }
@@ -245,25 +269,11 @@ public final class CrossfadeQueuedAudioPlayer {
         set { active.repeatMode = newValue }
     }
 
-    public var currentItem: AudioItem? {
-        active.currentItem
-    }
-
-    public var currentIndex: Int {
-        active.currentIndex
-    }
-
-    public var items: [AudioItem] {
-        active.items
-    }
-
-    public var previousItems: [AudioItem] {
-        active.previousItems
-    }
-
-    public var nextItems: [AudioItem] {
-        active.nextItems
-    }
+    public var currentItem: AudioItem? { active.currentItem }
+    public var currentIndex: Int { active.currentIndex }
+    public var items: [AudioItem] { active.items }
+    public var previousItems: [AudioItem] { active.previousItems }
+    public var nextItems: [AudioItem] { active.nextItems }
 
     // MARK: - Player Actions
 
@@ -271,29 +281,12 @@ public final class CrossfadeQueuedAudioPlayer {
         active.load(item: item, playWhenReady: playWhenReady)
     }
 
-    public func play() {
-        active.play()
-    }
-
-    public func pause() {
-        active.pause()
-    }
-
-    public func stop() {
-        active.stop()
-    }
-
-    public func seek(to seconds: TimeInterval) {
-        active.seek(to: seconds)
-    }
-
-    public func togglePlaying() {
-        active.togglePlaying()
-    }
-
-    public func clear() {
-        active.clear()
-    }
+    public func play() { active.play() }
+    public func pause() { active.pause() }
+    public func stop() { active.stop() }
+    public func seek(to seconds: TimeInterval) { active.seek(to: seconds) }
+    public func togglePlaying() { active.togglePlaying() }
+    public func clear() { active.clear() }
 
     // MARK: - Queue Actions
 
@@ -305,11 +298,6 @@ public final class CrossfadeQueuedAudioPlayer {
         active.add(items: items, playWhenReady: playWhenReady)
     }
 
-    public func next() {
-        active.next()
-    }
-
-    public func previous() {
-        active.previous()
-    }
+    public func next() { active.next() }
+    public func previous() { active.previous() }
 }
