@@ -8,7 +8,7 @@ public final class CrossfadeQueuedAudioPlayer {
     private var active: QueuedAudioPlayer
     private var inactive: QueuedAudioPlayer
 
-    public let event = EventHolder()
+    public let event = AudioPlayer.EventHolder()
 
     public init(
         nowPlayingInfoController: NowPlayingInfoControllerProtocol = NowPlayingInfoController(),
